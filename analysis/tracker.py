@@ -784,11 +784,15 @@ class BallAnalyzer:
             t_msec = cap.get(cv2.CAP_PROP_POS_MSEC)
             t_s = float(t_msec) / 1000.0 if t_msec and t_msec > 0 else (frame_idx / max(fps, 1.0))
 
-            # Detect ball
-            results = model.track(frame, persist=True, conf=0.5, verbose=False)
+            # Detect ball with lower confidence threshold
+            results = model.track(frame, persist=True, conf=0.25, verbose=False)  # Lowered from 0.5 to 0.25
             res = results[0]
             boxes = res.boxes.xywh.cpu() if res.boxes is not None else []
             confs = res.boxes.conf.cpu() if res.boxes is not None else []
+
+            # Debug logging every 30 frames
+            if frame_idx % 30 == 0:
+                print(f"[Frame {frame_idx}] Detections: {len(boxes)}, CALIB_OK: {CALIB_OK}")
 
             annotated_frame = frame.copy()
 
@@ -808,6 +812,13 @@ class BallAnalyzer:
                 cx, cy = float(x), float(y)
                 best_conf = float(confs[best_idx])
 
+                # Draw detection box
+                x1, y1 = int(x - w/2), int(y - h/2)
+                x2, y2 = int(x + w/2), int(y + h/2)
+                cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                cv2.putText(annotated_frame, f"Ball {best_conf:.2f}", (x1, max(y1-10, 20)),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+
             # Kalman filtering (simplified for production)
             est_x = est_y = None
             if cx is not None and cy is not None:
@@ -825,8 +836,15 @@ class BallAnalyzer:
             if est_x is not None and est_y is not None:
                 trajectory_data.append((est_x, est_y, frame_idx, t_s))
 
-                # Draw trajectory
-                cv2.circle(annotated_frame, (int(est_x), int(est_y)), 6, (0, 215, 255), -1)
+                # Draw trajectory line (connect previous points)
+                if len(trajectory_data) > 1:
+                    pts = np.array([(int(x), int(y)) for x, y, _, _ in trajectory_data[-10:]], dtype=np.int32)
+                    pts = pts.reshape((-1, 1, 2))
+                    cv2.polylines(annotated_frame, [pts], isClosed=False, color=(0, 255, 255), thickness=3)
+
+                # Draw current ball position
+                cv2.circle(annotated_frame, (int(est_x), int(est_y)), 8, (0, 215, 255), -1)
+                cv2.circle(annotated_frame, (int(est_x), int(est_y)), 10, (255, 255, 255), 2)
 
                 # Event detection (simplified)
                 if prev_est is not None:
