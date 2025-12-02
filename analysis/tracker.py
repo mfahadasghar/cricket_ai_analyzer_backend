@@ -355,309 +355,325 @@ def robust_speed_kmph(window_rows, fps):
     mps_med = float(np.median(trimmed))
     return mps_med * 3.6
 
-frame_idx = 0
-while cap.isOpened():
-    success, frame = cap.read()
-    if not success:
-        break
+if __name__ == "__main__":
+    # Script mode: Load model and video from test directory
+    model = YOLO("runs/detect/train/weights/best.pt")
+    video_name = "test-video2"
+    video_path = f"test/input/{video_name}.mp4"
+    cap = cv2.VideoCapture(video_path)
 
-    # Robust timestamp for this frame (fallback to frame_idx/fps if unavailable)
-    t_msec = cap.get(cv2.CAP_PROP_POS_MSEC)
-    t_s = float(t_msec) / 1000.0 if t_msec and t_msec > 0 else (frame_idx / max(fps, 1.0))
+    # Output settings
+    output_path = f"test/output/{video_name}.mp4"
+    frame_width = int(cap.get(3))
+    frame_height = int(cap.get(4))
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    out = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (frame_width, frame_height))
 
-    # Detect ball (YOLO) + fuse with Kalman filter
-    results = model.track(frame, persist=True, conf=0.5)
-    res = results[0]
-    boxes = res.boxes.xywh.cpu() if res.boxes is not None else []
-    confs = res.boxes.conf.cpu() if res.boxes is not None else []
+    dt = 1.0 / max(fps, 1.0)
+    kf = BallKF(dt=dt)
 
-    annotated_frame = res.plot() if res is not None else frame.copy()
+    frame_idx = 0
+    while cap.isOpened():
+        success, frame = cap.read()
+        if not success:
+            break
 
-    # Draw proper pitch overlay (homography quad) if available
-    if CALIB_OK and pitch_quad_px is not None and len(pitch_quad_px) == 4:
-        overlay = annotated_frame.copy()
-        cv2.polylines(overlay, [pitch_quad_px.reshape((-1, 1, 2))], isClosed=True, color=(255, 255, 255), thickness=3)
-        cv2.fillPoly(overlay, [pitch_quad_px.reshape((-1, 1, 2))], color=(255, 255, 255))
-        cv2.addWeighted(overlay, 0.12, annotated_frame, 0.88, 0, annotated_frame)
-
-    # Extract best detection (if any) and its confidence
-    cx = cy = None
-    best_conf = None
-    if boxes is not None and len(boxes) > 0:
-        best_idx = confs.argmax()
-        x, y, w, h = boxes[best_idx]
-        cx, cy = float(x), float(y)
-        best_conf = float(confs[best_idx])
-        # Draw detection box and label (explicit)
-        x1, y1 = int(cx - float(w) / 2), int(cy - float(h) / 2)
-        x2, y2 = int(cx + float(w) / 2), int(cy + float(h) / 2)
-        cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-        cv2.putText(annotated_frame, f"Ball {best_conf:.2f}", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
-
-    # Are we within the post-bounce KF freeze window?
-    in_kf_freeze = (bounce_idx is not None) and ((frame_idx - bounce_idx) <= KF_FREEZE_AFTER_BOUNCE_FRAMES)
-    # Adaptive bootstrap + gated fusion (with bounce freeze)
-    est_x = est_y = None
-
-    if in_kf_freeze:
-        # During freeze: do NOT use KF predict/correct; use raw detection if available
-        if cx is not None and cy is not None:
-            est_x, est_y = cx, cy
-            # For analytics, store the measurement so speed/metrics use it
-            filtered_by_frame[frame_idx] = (float(cx), float(cy))
-        # Mark that we still need to reset KF after freeze ends
-        if KF_RESET_ON_BOUNCE:
-            _kf_reset_done_for_bounce = False
-    else:
-        # Optionally reset/rebootstrap the KF the first frame after freeze ends
-        if KF_RESET_ON_BOUNCE and bounce_idx is not None and not _kf_reset_done_for_bounce and (frame_idx - bounce_idx) == (KF_FREEZE_AFTER_BOUNCE_FRAMES + 1):
-            # Reset KF but keep trajectory continuity; seed bootstrap with current detection if available
-            kf.initialized = False
-            if cx is not None and cy is not None:
-                last_det = (cx, cy)
-                last_det_frame = frame_idx
-                # Ensure we keep drawing and recording using the measurement on this frame
-                est_x, est_y = cx, cy
-                filtered_by_frame[frame_idx] = (float(cx), float(cy))
-            _kf_reset_done_for_bounce = True
-
-        if not kf.initialized:
-            if cx is not None and cy is not None:
-                if last_det is None:
-                    # First-ever detection: store and draw raw; wait for second to bootstrap velocity
-                    last_det = (cx, cy)
-                    last_det_frame = frame_idx
+            # Robust timestamp for this frame (fallback to frame_idx/fps if unavailable)
+            t_msec = cap.get(cv2.CAP_PROP_POS_MSEC)
+            t_s = float(t_msec) / 1000.0 if t_msec and t_msec > 0 else (frame_idx / max(fps, 1.0))
+        
+            # Detect ball (YOLO) + fuse with Kalman filter
+            results = model.track(frame, persist=True, conf=0.5)
+            res = results[0]
+            boxes = res.boxes.xywh.cpu() if res.boxes is not None else []
+            confs = res.boxes.conf.cpu() if res.boxes is not None else []
+        
+            annotated_frame = res.plot() if res is not None else frame.copy()
+        
+            # Draw proper pitch overlay (homography quad) if available
+            if CALIB_OK and pitch_quad_px is not None and len(pitch_quad_px) == 4:
+                overlay = annotated_frame.copy()
+                cv2.polylines(overlay, [pitch_quad_px.reshape((-1, 1, 2))], isClosed=True, color=(255, 255, 255), thickness=3)
+                cv2.fillPoly(overlay, [pitch_quad_px.reshape((-1, 1, 2))], color=(255, 255, 255))
+                cv2.addWeighted(overlay, 0.12, annotated_frame, 0.88, 0, annotated_frame)
+        
+            # Extract best detection (if any) and its confidence
+            cx = cy = None
+            best_conf = None
+            if boxes is not None and len(boxes) > 0:
+                best_idx = confs.argmax()
+                x, y, w, h = boxes[best_idx]
+                cx, cy = float(x), float(y)
+                best_conf = float(confs[best_idx])
+                # Draw detection box and label (explicit)
+                x1, y1 = int(cx - float(w) / 2), int(cy - float(h) / 2)
+                x2, y2 = int(cx + float(w) / 2), int(cy + float(h) / 2)
+                cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                cv2.putText(annotated_frame, f"Ball {best_conf:.2f}", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+        
+            # Are we within the post-bounce KF freeze window?
+            in_kf_freeze = (bounce_idx is not None) and ((frame_idx - bounce_idx) <= KF_FREEZE_AFTER_BOUNCE_FRAMES)
+            # Adaptive bootstrap + gated fusion (with bounce freeze)
+            est_x = est_y = None
+        
+            if in_kf_freeze:
+                # During freeze: do NOT use KF predict/correct; use raw detection if available
+                if cx is not None and cy is not None:
                     est_x, est_y = cx, cy
-                    filtered_by_frame[frame_idx] = None
-                else:
-                    # Second detection: initialize KF with velocity from two detections
-                    dt_frames = max(1, frame_idx - (last_det_frame or frame_idx))
-                    vx = (cx - last_det[0]) / dt_frames
-                    vy = (cy - last_det[1]) / dt_frames
-                    kf.kf.statePost = np.array([[cx], [cy], [vx], [vy]], dtype=np.float32)
-                    kf.initialized = True
-                    # Use the current detection as the first estimate
-                    est_x, est_y = cx, cy
-                    filtered_by_frame[frame_idx] = None
-        else:
-            # Predict first
-            px, py = kf.predict()
-            # Correct only if detection is strong enough
-            if cx is not None and cy is not None and (best_conf is None or best_conf >= CONF_GATE):
-                kf.correct(cx, cy)
-            sx, sy, _, _ = kf.state()
-            # For visualization, prefer the measurement when available to remove KF "lag"
-            if USE_MEASUREMENT_WHEN_AVAILABLE and cx is not None and cy is not None:
-                est_x, est_y = cx, cy
+                    # For analytics, store the measurement so speed/metrics use it
+                    filtered_by_frame[frame_idx] = (float(cx), float(cy))
+                # Mark that we still need to reset KF after freeze ends
+                if KF_RESET_ON_BOUNCE:
+                    _kf_reset_done_for_bounce = False
             else:
-                est_x, est_y = sx, sy
-            # Cache the filtered state for analytics (even if we draw the measurement)
-            filtered_by_frame[frame_idx] = (float(sx), float(sy))
-
-    # Draw/store trajectory if we have an estimate
-    if est_x is not None and est_y is not None:
-        track = track_history[manual_id]
-        track.append((est_x, est_y))
-        trajectory_data.append((est_x, est_y, frame_idx, t_s))
-        # Collect ground-projected positions for JSON
-        if CALIB_OK:
-            gm = px_to_ground_via_foot(est_x, est_y)
-            if gm is not None:
-                Xg, Yg = gm
-                Yg = _map_z(Yg)
-                ball_positions.append({
-                    "frame": int(frame_idx),
-                    "t_s": float(t_s),
-                    "x_m": float(Xg),
-                    "z_m": float(Yg)
-                })
-        # (Optional) keep filtered estimate separately if you want smoother analytics later
-        # filtered_x, filtered_y, _, _ = kf.state() if kf.initialized else (est_x, est_y, 0, 0)
-        if len(track) > 1:
-            pts = np.array(track, dtype=np.int32).reshape((-1, 1, 2))
-            cv2.polylines(annotated_frame, [pts], isClosed=False, color=(255, 255, 0), thickness=6)
-        cv2.circle(annotated_frame, (int(est_x), int(est_y)), 6, (0, 215, 255), -1)
-
-        # Realtime (x,z) meters near the ball
-        if CALIB_OK and SHOW_REALTIME_POS:
-            gm = px_to_ground_via_foot(est_x, est_y)
-            if gm is not None:
-                Xg, Yg = gm  # X across wicket (m), Y along pitch (m)
-                # Clamp to physical pitch bounds for display
-                Xg_c = max(0.0, min(WICKET_WIDTH_M, Xg))
-                Yg_m = _map_z(Yg)
-                Yg_c = max(0.0, min(L_PITCH_M, Yg_m))
-                # Show lateral relative to wicket center for readability
-                Xrel = Xg_c - (WICKET_WIDTH_M / 2.0)
-                label = f"x={Xrel:+.2f}m  z={Yg_c:.2f}m"
-                cv2.putText(annotated_frame, label, (int(est_x) + 10, int(est_y) - 10),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 255, 200), 2)
-
-        # --- Section 2 logic: compute release & bounce ---
-        # Velocity in pixels/frame from current and previous estimates
-        if prev_est is not None:
-            vx_ppf = float(est_x - prev_est[0])
-            vy_ppf = float(est_y - prev_est[1])
-            speed_ppf = (vx_ppf**2 + vy_ppf**2) ** 0.5
-
-            # Smooth speed a bit with a short window to avoid triggering on noise
-            vy_hist.append(vy_ppf)
-            if len(vy_hist) > SPEED_SMOOTH_N:
-                vy_hist.pop(0)
-            avg_speed_ppf = speed_ppf
-            if len(vy_hist) >= 2:
-                # simple average over last N speeds approximated using vy history length
-                # (we keep full speed but use vy_hist length as a small, quick buffer)
-                avg_speed_ppf = (avg_speed_ppf + sum(abs(v) for v in vy_hist) / max(1, len(vy_hist))) / 2.0
-
-            # RELEASE: first time speed crosses threshold
-            if release_idx is None and avg_speed_ppf >= MIN_SPEED_PX_PER_F:
-                release_idx = frame_idx
-                release_pt = (int(est_x), int(est_y))
-
-            # BOUNCE: detect a sign flip in vertical velocity with minimum magnitude, and only after a small gap from release
-            if release_idx is not None and bounce_idx is None and (frame_idx - release_idx) >= BOUNCE_MIN_GAP_FRAMES:
-                if len(vy_hist) >= 2:
-                    prev_vy = vy_hist[-2]
-                    curr_vy = vy_hist[-1]
-                    if abs(prev_vy) > VY_MIN_MAG and abs(curr_vy) > VY_MIN_MAG:
-                        if (prev_vy > 0 and curr_vy < 0) or (prev_vy < 0 and curr_vy > 0):
-                            bounce_idx = frame_idx
-                            bounce_pt = (int(est_x), int(est_y))
-
-            # CONTACT: after bounce, detect bat contact by deflection or speed drop near batsman end
-            if bounce_idx is not None and contact_idx is None and (frame_idx - bounce_idx) >= CONTACT_MIN_GAP_FRAMES and CALIB_OK:
-                # Consider last 6-8 trajectory rows after bounce
-                post_rows = [row for row in trajectory_data if row[2] > bounce_idx]
-                if len(post_rows) >= 4:
-                    # Map to ground and compute recent velocities
-                    g = _rows_to_ground(post_rows[-8:], fps)
-                    if len(g) >= 4:
-                        # Build two vectors: pre (before last), post (last step)
-                        f0, t0, X0, Y0 = g[-4]
-                        f1, t1, X1, Y1 = g[-3]
-                        f2, t2, X2, Y2 = g[-2]
-                        f3, t3, X3, Y3 = g[-1]
-                        dt_pre = max(1e-6, (f2 - f1) / fps)
-                        dt_post = max(1e-6, (f3 - f2) / fps)
-                        vpre = ((X2 - X1) / dt_pre, (Y2 - Y1) / dt_pre)
-                        vpost = ((X3 - X2) / dt_post, (Y3 - Y2) / dt_post)
-                        ang = _angle_deg(vpre[0], vpre[1], vpost[0], vpost[1])
-                        sp_pre = (vpre[0]**2 + vpre[1]**2) ** 0.5
-                        sp_post = (vpost[0]**2 + vpost[1]**2) ** 0.5
-                        near_batsman = (Y3 >= CONTACT_MIN_Z_M)
-                        big_deflect = (ang >= CONTACT_ANGLE_DEG)
-                        big_slow = (sp_post <= CONTACT_SPEED_DROP * sp_pre)
-                        if near_batsman and (big_deflect or big_slow):
-                            contact_idx = frame_idx
-                            contact_pt = (int(est_x), int(est_y))
-                            # Build z-affine mapping once we have release & contact
-                            _compute_z_affine_mapping()
-
-            # Draw markers if we have events
-            if release_pt is not None:
-                cv2.circle(annotated_frame, release_pt, 7, (255, 0, 0), -1)   # blue = release
-                cv2.putText(annotated_frame, "RELEASE", (release_pt[0]+8, release_pt[1]-8),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
-            if bounce_pt is not None:
-                cv2.circle(annotated_frame, bounce_pt, 7, (0, 0, 255), -1)   # red = bounce
-                cv2.putText(annotated_frame, "BOUNCE", (bounce_pt[0]+8, bounce_pt[1]-8),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
-            if contact_pt is not None:
-                cv2.circle(annotated_frame, contact_pt, 7, (0, 165, 255), -1)  # orange = contact
-                cv2.putText(annotated_frame, "CONTACT", (contact_pt[0]+8, contact_pt[1]-8),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 165, 255), 2)
-
-            # --- Ground metrics with homography ---
-            if CALIB_OK:
-                # Compute speed from release → bounce/window using ground coords (more permissive)
-                if release_idx is not None:
-                    start_f = release_idx
-                    end_f = bounce_idx if bounce_idx is not None else (release_idx + 10)
-                    window_rows = traj_rows_between(start_f, end_f)
-                    if len(window_rows) >= 2:
-                        spd = robust_speed_kmph(window_rows, fps)
-                        if spd is not None:
-                            release_speed_kmph_val = float(spd)
-                # Fallback: live speed from the last few samples if release not locked or window too small
-                if release_speed_kmph_val is None:
-                    rows_sorted = sorted(trajectory_data, key=lambda r: r[2])
-                    tail = rows_sorted[-8:] if len(rows_sorted) >= 3 else []
-                    if len(tail) >= 2:
-                        spd2 = robust_speed_kmph(tail, fps)
-                        if spd2 is not None:
-                            release_speed_kmph_val = float(spd2)
-
-                # Compute length & line at bounce once
-                if bounce_idx is not None and length_m_val is None and line_m_val is None:
-                    row_b = traj_row_at(bounce_idx)
-                    if row_b is not None:
-                        bx, by, _, _ = row_b
-                        gmb = px_to_ground_via_foot(bx, by)
-                        if gmb is not None:
-                            Xb, Yb_hat = gmb
-                            Yb = _map_z(Yb_hat)
-                            length_m_val = max(0.0, min(L_PITCH_M, L_PITCH_M - Yb))
-                            line_m_val = Xb - (WICKET_WIDTH_M / 2.0)
-                            # Optional sanity print for extreme numbers
-                            if (release_speed_kmph_val is not None and (release_speed_kmph_val < 10 or release_speed_kmph_val > 170)):
-                                print(f"[metrics] WARN speed {release_speed_kmph_val:.1f} km/h; check calibration & frame timing")
-                            if abs(line_m_val) > 1.0 or length_m_val < 0 or length_m_val > L_PITCH_M:
-                                print(f"[metrics] WARN line/length out of typical range: line={line_m_val:.2f} m, length={length_m_val:.2f} m")
-
-                # Overlays
-                y_base = 40
-                if z_affine_ok:
-                    cv2.putText(annotated_frame, "z-calib: release→0m, contact→17.5m", (20, 24),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (180, 220, 180), 2)
-                # Show a placeholder while speed is still estimating
-                if release_speed_kmph_val is None and release_idx is not None:
-                    cv2.putText(annotated_frame, "Speed ~ … (estimating)", (20, y_base), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (80, 200, 80), 2)
-                if release_speed_kmph_val is not None:
-                    cv2.putText(annotated_frame, f"Speed ~ {release_speed_kmph_val:.1f} km/h", (20, y_base),
-                                cv2.FONT_HERSHEY_SIMPLEX, 1.0, (50, 255, 50), 2)
-                    y_base += 36
-                if length_m_val is not None:
-                    cv2.putText(annotated_frame, f"Length ~ {length_m_val:.2f} m", (20, y_base),
-                                cv2.FONT_HERSHEY_SIMPLEX, 1.0, (50, 200, 255), 2)
-                    y_base += 36
-                if line_m_val is not None:
-                    cv2.putText(annotated_frame, f"Line ~ {line_m_val:+.2f} m", (20, y_base),
-                                cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 220, 50), 2)
-            # Optionally end processing once contact is detected
-            if STOP_ON_CONTACT and contact_idx is not None:
-                print(f"[events] Contact detected at frame {contact_idx}. Stopping.")
-                # Write current frame and break after saving
-                out.write(annotated_frame)
-                cv2.imshow("Ball Tracking", annotated_frame)
+                # Optionally reset/rebootstrap the KF the first frame after freeze ends
+                if KF_RESET_ON_BOUNCE and bounce_idx is not None and not _kf_reset_done_for_bounce and (frame_idx - bounce_idx) == (KF_FREEZE_AFTER_BOUNCE_FRAMES + 1):
+                    # Reset KF but keep trajectory continuity; seed bootstrap with current detection if available
+                    kf.initialized = False
+                    if cx is not None and cy is not None:
+                        last_det = (cx, cy)
+                        last_det_frame = frame_idx
+                        # Ensure we keep drawing and recording using the measurement on this frame
+                        est_x, est_y = cx, cy
+                        filtered_by_frame[frame_idx] = (float(cx), float(cy))
+                    _kf_reset_done_for_bounce = True
+        
+                if not kf.initialized:
+                    if cx is not None and cy is not None:
+                        if last_det is None:
+                            # First-ever detection: store and draw raw; wait for second to bootstrap velocity
+                            last_det = (cx, cy)
+                            last_det_frame = frame_idx
+                            est_x, est_y = cx, cy
+                            filtered_by_frame[frame_idx] = None
+                        else:
+                            # Second detection: initialize KF with velocity from two detections
+                            dt_frames = max(1, frame_idx - (last_det_frame or frame_idx))
+                            vx = (cx - last_det[0]) / dt_frames
+                            vy = (cy - last_det[1]) / dt_frames
+                            kf.kf.statePost = np.array([[cx], [cy], [vx], [vy]], dtype=np.float32)
+                            kf.initialized = True
+                            # Use the current detection as the first estimate
+                            est_x, est_y = cx, cy
+                            filtered_by_frame[frame_idx] = None
+                else:
+                    # Predict first
+                    px, py = kf.predict()
+                    # Correct only if detection is strong enough
+                    if cx is not None and cy is not None and (best_conf is None or best_conf >= CONF_GATE):
+                        kf.correct(cx, cy)
+                    sx, sy, _, _ = kf.state()
+                    # For visualization, prefer the measurement when available to remove KF "lag"
+                    if USE_MEASUREMENT_WHEN_AVAILABLE and cx is not None and cy is not None:
+                        est_x, est_y = cx, cy
+                    else:
+                        est_x, est_y = sx, sy
+                    # Cache the filtered state for analytics (even if we draw the measurement)
+                    filtered_by_frame[frame_idx] = (float(sx), float(sy))
+        
+            # Draw/store trajectory if we have an estimate
+            if est_x is not None and est_y is not None:
+                track = track_history[manual_id]
+                track.append((est_x, est_y))
+                trajectory_data.append((est_x, est_y, frame_idx, t_s))
+                # Collect ground-projected positions for JSON
+                if CALIB_OK:
+                    gm = px_to_ground_via_foot(est_x, est_y)
+                    if gm is not None:
+                        Xg, Yg = gm
+                        Yg = _map_z(Yg)
+                        ball_positions.append({
+                            "frame": int(frame_idx),
+                            "t_s": float(t_s),
+                            "x_m": float(Xg),
+                            "z_m": float(Yg)
+                        })
+                # (Optional) keep filtered estimate separately if you want smoother analytics later
+                # filtered_x, filtered_y, _, _ = kf.state() if kf.initialized else (est_x, est_y, 0, 0)
+                if len(track) > 1:
+                    pts = np.array(track, dtype=np.int32).reshape((-1, 1, 2))
+                    cv2.polylines(annotated_frame, [pts], isClosed=False, color=(255, 255, 0), thickness=6)
+                cv2.circle(annotated_frame, (int(est_x), int(est_y)), 6, (0, 215, 255), -1)
+        
+                # Realtime (x,z) meters near the ball
+                if CALIB_OK and SHOW_REALTIME_POS:
+                    gm = px_to_ground_via_foot(est_x, est_y)
+                    if gm is not None:
+                        Xg, Yg = gm  # X across wicket (m), Y along pitch (m)
+                        # Clamp to physical pitch bounds for display
+                        Xg_c = max(0.0, min(WICKET_WIDTH_M, Xg))
+                        Yg_m = _map_z(Yg)
+                        Yg_c = max(0.0, min(L_PITCH_M, Yg_m))
+                        # Show lateral relative to wicket center for readability
+                        Xrel = Xg_c - (WICKET_WIDTH_M / 2.0)
+                        label = f"x={Xrel:+.2f}m  z={Yg_c:.2f}m"
+                        cv2.putText(annotated_frame, label, (int(est_x) + 10, int(est_y) - 10),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 255, 200), 2)
+        
+                # --- Section 2 logic: compute release & bounce ---
+                # Velocity in pixels/frame from current and previous estimates
+                if prev_est is not None:
+                    vx_ppf = float(est_x - prev_est[0])
+                    vy_ppf = float(est_y - prev_est[1])
+                    speed_ppf = (vx_ppf**2 + vy_ppf**2) ** 0.5
+        
+                    # Smooth speed a bit with a short window to avoid triggering on noise
+                    vy_hist.append(vy_ppf)
+                    if len(vy_hist) > SPEED_SMOOTH_N:
+                        vy_hist.pop(0)
+                    avg_speed_ppf = speed_ppf
+                    if len(vy_hist) >= 2:
+                        # simple average over last N speeds approximated using vy history length
+                        # (we keep full speed but use vy_hist length as a small, quick buffer)
+                        avg_speed_ppf = (avg_speed_ppf + sum(abs(v) for v in vy_hist) / max(1, len(vy_hist))) / 2.0
+        
+                    # RELEASE: first time speed crosses threshold
+                    if release_idx is None and avg_speed_ppf >= MIN_SPEED_PX_PER_F:
+                        release_idx = frame_idx
+                        release_pt = (int(est_x), int(est_y))
+        
+                    # BOUNCE: detect a sign flip in vertical velocity with minimum magnitude, and only after a small gap from release
+                    if release_idx is not None and bounce_idx is None and (frame_idx - release_idx) >= BOUNCE_MIN_GAP_FRAMES:
+                        if len(vy_hist) >= 2:
+                            prev_vy = vy_hist[-2]
+                            curr_vy = vy_hist[-1]
+                            if abs(prev_vy) > VY_MIN_MAG and abs(curr_vy) > VY_MIN_MAG:
+                                if (prev_vy > 0 and curr_vy < 0) or (prev_vy < 0 and curr_vy > 0):
+                                    bounce_idx = frame_idx
+                                    bounce_pt = (int(est_x), int(est_y))
+        
+                    # CONTACT: after bounce, detect bat contact by deflection or speed drop near batsman end
+                    if bounce_idx is not None and contact_idx is None and (frame_idx - bounce_idx) >= CONTACT_MIN_GAP_FRAMES and CALIB_OK:
+                        # Consider last 6-8 trajectory rows after bounce
+                        post_rows = [row for row in trajectory_data if row[2] > bounce_idx]
+                        if len(post_rows) >= 4:
+                            # Map to ground and compute recent velocities
+                            g = _rows_to_ground(post_rows[-8:], fps)
+                            if len(g) >= 4:
+                                # Build two vectors: pre (before last), post (last step)
+                                f0, t0, X0, Y0 = g[-4]
+                                f1, t1, X1, Y1 = g[-3]
+                                f2, t2, X2, Y2 = g[-2]
+                                f3, t3, X3, Y3 = g[-1]
+                                dt_pre = max(1e-6, (f2 - f1) / fps)
+                                dt_post = max(1e-6, (f3 - f2) / fps)
+                                vpre = ((X2 - X1) / dt_pre, (Y2 - Y1) / dt_pre)
+                                vpost = ((X3 - X2) / dt_post, (Y3 - Y2) / dt_post)
+                                ang = _angle_deg(vpre[0], vpre[1], vpost[0], vpost[1])
+                                sp_pre = (vpre[0]**2 + vpre[1]**2) ** 0.5
+                                sp_post = (vpost[0]**2 + vpost[1]**2) ** 0.5
+                                near_batsman = (Y3 >= CONTACT_MIN_Z_M)
+                                big_deflect = (ang >= CONTACT_ANGLE_DEG)
+                                big_slow = (sp_post <= CONTACT_SPEED_DROP * sp_pre)
+                                if near_batsman and (big_deflect or big_slow):
+                                    contact_idx = frame_idx
+                                    contact_pt = (int(est_x), int(est_y))
+                                    # Build z-affine mapping once we have release & contact
+                                    _compute_z_affine_mapping()
+        
+                    # Draw markers if we have events
+                    if release_pt is not None:
+                        cv2.circle(annotated_frame, release_pt, 7, (255, 0, 0), -1)   # blue = release
+                        cv2.putText(annotated_frame, "RELEASE", (release_pt[0]+8, release_pt[1]-8),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+                    if bounce_pt is not None:
+                        cv2.circle(annotated_frame, bounce_pt, 7, (0, 0, 255), -1)   # red = bounce
+                        cv2.putText(annotated_frame, "BOUNCE", (bounce_pt[0]+8, bounce_pt[1]-8),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+                    if contact_pt is not None:
+                        cv2.circle(annotated_frame, contact_pt, 7, (0, 165, 255), -1)  # orange = contact
+                        cv2.putText(annotated_frame, "CONTACT", (contact_pt[0]+8, contact_pt[1]-8),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 165, 255), 2)
+        
+                    # --- Ground metrics with homography ---
+                    if CALIB_OK:
+                        # Compute speed from release → bounce/window using ground coords (more permissive)
+                        if release_idx is not None:
+                            start_f = release_idx
+                            end_f = bounce_idx if bounce_idx is not None else (release_idx + 10)
+                            window_rows = traj_rows_between(start_f, end_f)
+                            if len(window_rows) >= 2:
+                                spd = robust_speed_kmph(window_rows, fps)
+                                if spd is not None:
+                                    release_speed_kmph_val = float(spd)
+                        # Fallback: live speed from the last few samples if release not locked or window too small
+                        if release_speed_kmph_val is None:
+                            rows_sorted = sorted(trajectory_data, key=lambda r: r[2])
+                            tail = rows_sorted[-8:] if len(rows_sorted) >= 3 else []
+                            if len(tail) >= 2:
+                                spd2 = robust_speed_kmph(tail, fps)
+                                if spd2 is not None:
+                                    release_speed_kmph_val = float(spd2)
+        
+                        # Compute length & line at bounce once
+                        if bounce_idx is not None and length_m_val is None and line_m_val is None:
+                            row_b = traj_row_at(bounce_idx)
+                            if row_b is not None:
+                                bx, by, _, _ = row_b
+                                gmb = px_to_ground_via_foot(bx, by)
+                                if gmb is not None:
+                                    Xb, Yb_hat = gmb
+                                    Yb = _map_z(Yb_hat)
+                                    length_m_val = max(0.0, min(L_PITCH_M, L_PITCH_M - Yb))
+                                    line_m_val = Xb - (WICKET_WIDTH_M / 2.0)
+                                    # Optional sanity print for extreme numbers
+                                    if (release_speed_kmph_val is not None and (release_speed_kmph_val < 10 or release_speed_kmph_val > 170)):
+                                        print(f"[metrics] WARN speed {release_speed_kmph_val:.1f} km/h; check calibration & frame timing")
+                                    if abs(line_m_val) > 1.0 or length_m_val < 0 or length_m_val > L_PITCH_M:
+                                        print(f"[metrics] WARN line/length out of typical range: line={line_m_val:.2f} m, length={length_m_val:.2f} m")
+        
+                        # Overlays
+                        y_base = 40
+                        if z_affine_ok:
+                            cv2.putText(annotated_frame, "z-calib: release→0m, contact→17.5m", (20, 24),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (180, 220, 180), 2)
+                        # Show a placeholder while speed is still estimating
+                        if release_speed_kmph_val is None and release_idx is not None:
+                            cv2.putText(annotated_frame, "Speed ~ … (estimating)", (20, y_base), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (80, 200, 80), 2)
+                        if release_speed_kmph_val is not None:
+                            cv2.putText(annotated_frame, f"Speed ~ {release_speed_kmph_val:.1f} km/h", (20, y_base),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, (50, 255, 50), 2)
+                            y_base += 36
+                        if length_m_val is not None:
+                            cv2.putText(annotated_frame, f"Length ~ {length_m_val:.2f} m", (20, y_base),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, (50, 200, 255), 2)
+                            y_base += 36
+                        if line_m_val is not None:
+                            cv2.putText(annotated_frame, f"Line ~ {line_m_val:+.2f} m", (20, y_base),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 220, 50), 2)
+                    # Optionally end processing once contact is detected
+                    if STOP_ON_CONTACT and contact_idx is not None:
+                        print(f"[events] Contact detected at frame {contact_idx}. Stopping.")
+                        # Write current frame and break after saving
+                        out.write(annotated_frame)
+                        cv2.imshow("Ball Tracking", annotated_frame)
+                        break
+        
+                prev_est = (est_x, est_y)
+        
+            # Save frame
+            cv2.imshow("Ball Tracking", annotated_frame)
+            out.write(annotated_frame)
+        
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord("q"):
                 break
+        
+                frame_idx += 1
 
-        prev_est = (est_x, est_y)
+    # Cleanup
+    cap.release()
+    out.release()
 
-    # Save frame
-    cv2.imshow("Ball Tracking", annotated_frame)
-    out.write(annotated_frame)
+    # Export ball positions to JSON
+    session_id = video_name
+    out_json_path = f"test/output/{session_id}_positions.json"
+    os.makedirs(os.path.dirname(out_json_path), exist_ok=True)
+    with open(out_json_path, "w") as f:
+        json.dump(ball_positions, f, indent=2)
+    print(f"[export] Ball positions written to {out_json_path} ({len(ball_positions)} points)")
 
-    key = cv2.waitKey(1) & 0xFF
-    if key == ord("q"):
-        break
-
-    frame_idx += 1
-
-
-# Cleanup
-cap.release()
-out.release()
-
-# Export ball positions to JSON
-session_id = video_name
-out_json_path = f"test/output/{session_id}_positions.json"
-os.makedirs(os.path.dirname(out_json_path), exist_ok=True)
-with open(out_json_path, "w") as f:
-    json.dump(ball_positions, f, indent=2)
-print(f"[export] Ball positions written to {out_json_path} ({len(ball_positions)} points)")
-
-cv2.destroyAllWindows()
+    cv2.destroyAllWindows()
 
 
 class BallAnalyzer:
