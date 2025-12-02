@@ -105,9 +105,19 @@ async def detect_stumps_endpoint(video: UploadFile = File(...)):
 
         logger.info(f"Stump detection complete: {file_id}")
 
+        # Extract 4 corner points for Flutter app
+        image_pts = stump_data.get("image_points", {})
+        stump_points = [
+            image_pts.get("bowler_bottom_left"),
+            image_pts.get("bowler_bottom_right"),
+            image_pts.get("batsman_bottom_right"),
+            image_pts.get("batsman_bottom_left"),
+        ]
+
         return JSONResponse(content={
             "file_id": file_id,
-            "stumps": stump_data
+            "stumps": stump_points,  # Send as list of [x, y] points
+            "calibration": stump_data  # Also include full calibration for reference
         })
 
     except FileNotFoundError as e:
@@ -147,10 +157,41 @@ async def analyze_ball_endpoint(
             stump_content = await stump_json.read()
             f.write(stump_content)
 
-        # Validate stump JSON
+        # Validate and convert stump JSON
         try:
             stump_data = json.loads(stump_content)
             logger.info(f"Stump data loaded: {stump_data.keys() if isinstance(stump_data, dict) else 'invalid format'}")
+
+            # Convert Flutter's simple format to full calibration format if needed
+            if "stumps" in stump_data and "image_points" not in stump_data:
+                # Flutter sends: {"stumps": [[x1,y1], [x2,y2], [x3,y3], [x4,y4]]}
+                # Convert to full format expected by BallAnalyzer
+                points = stump_data["stumps"]
+                if len(points) == 4:
+                    # Get video dimensions
+                    import cv2
+                    cap = cv2.VideoCapture(video_path)
+                    frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                    frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                    cap.release()
+
+                    stump_data = {
+                        "video": video_path,
+                        "frame_index": 0,
+                        "image_size": [frame_width, frame_height],
+                        "image_points": {
+                            "bowler_bottom_left": points[0],
+                            "bowler_bottom_right": points[1],
+                            "batsman_bottom_right": points[2],
+                            "batsman_bottom_left": points[3],
+                            "bowler_middle_stump": [(points[0][0] + points[1][0]) // 2, points[0][1]],
+                            "batsman_middle_stump": [(points[2][0] + points[3][0]) // 2, points[2][1]]
+                        }
+                    }
+                    # Rewrite the calibration file with full format
+                    with open(stump_path, "w") as f:
+                        json.dump(stump_data, f, indent=2)
+                    logger.info("Converted simple stump format to full calibration format")
         except json.JSONDecodeError as e:
             raise HTTPException(status_code=400, detail=f"Invalid stump JSON: {str(e)}")
 
@@ -160,7 +201,7 @@ async def analyze_ball_endpoint(
 
         logger.info(f"Ball analysis complete: {file_id}")
 
-        # Create URL for annotated video
+        # Create URL for annotated video (relative path, client will prepend baseUrl)
         annotated_video_url = f"/download/{file_id}_annotated.mp4"
 
         return {
@@ -169,7 +210,8 @@ async def analyze_ball_endpoint(
             "length": results.get("length"),
             "bounce": results.get("bounce"),
             "trajectory": results.get("trajectory", []),
-            "annotated_video_url": annotated_video_url,
+            "annotated_video": annotated_video_url,  # Changed key name to match Flutter
+            "video_path": annotated_video_url,  # Alternative key for compatibility
             "file_id": file_id
         }
 
