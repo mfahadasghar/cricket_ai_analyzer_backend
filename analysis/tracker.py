@@ -836,15 +836,16 @@ class BallAnalyzer:
             if est_x is not None and est_y is not None:
                 trajectory_data.append((est_x, est_y, frame_idx, t_s))
 
-                # Draw trajectory line (connect previous points)
+                # Draw COMPLETE trajectory line (all points from start to current)
                 if len(trajectory_data) > 1:
-                    pts = np.array([(int(x), int(y)) for x, y, _, _ in trajectory_data[-10:]], dtype=np.int32)
+                    pts = np.array([(int(x), int(y)) for x, y, _, _ in trajectory_data], dtype=np.int32)
                     pts = pts.reshape((-1, 1, 2))
-                    cv2.polylines(annotated_frame, [pts], isClosed=False, color=(0, 255, 255), thickness=3)
+                    # Draw thick yellow trajectory line
+                    cv2.polylines(annotated_frame, [pts], isClosed=False, color=(0, 255, 255), thickness=4)
 
-                # Draw current ball position
-                cv2.circle(annotated_frame, (int(est_x), int(est_y)), 8, (0, 215, 255), -1)
-                cv2.circle(annotated_frame, (int(est_x), int(est_y)), 10, (255, 255, 255), 2)
+                # Draw current ball position with larger marker
+                cv2.circle(annotated_frame, (int(est_x), int(est_y)), 10, (0, 215, 255), -1)
+                cv2.circle(annotated_frame, (int(est_x), int(est_y)), 12, (255, 255, 255), 3)
 
                 # Event detection (simplified)
                 if prev_est is not None:
