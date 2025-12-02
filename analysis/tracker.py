@@ -56,34 +56,12 @@ kf = None
 L_PITCH_M = 20.12  # length in meters
 WICKET_WIDTH_M = 0.2286  # meters (≈ 9 inches across outer stumps)
 W_PITCH_M = 3.05   # width in meters
-CALIB_JSON = "calibration_stumps.json"
+
+# Initialize global variables (will be set in script mode or by BallAnalyzer)
+CALIB_JSON = None
 CALIB_OK = False
 H = None
-pitch_quad_px = None  # 4 image points in order: bowBL, bowBR, batBR, batBL
-
-try:
-    with open(CALIB_JSON, "r") as f:
-        _cal = json.load(f)
-    pts = _cal["image_points"]
-    bow_bl = pts["bowler_bottom_left"]
-    bow_br = pts["bowler_bottom_right"]
-    bat_bl = pts["batsman_bottom_left"]
-    bat_br = pts["batsman_bottom_right"]
-
-    # Source quad in image pixels (bowBL, bowBR, batBR, batBL)
-    src = np.array([bow_bl, bow_br, bat_br, bat_bl], dtype=np.float32)
-    # Destination is a perfect rectangle in meters: X across (0→W), Y along (0→L)
-    dst = np.array([[0.0, 0.0],
-                    [WICKET_WIDTH_M, 0.0],
-                    [WICKET_WIDTH_M, L_PITCH_M],
-                    [0.0, L_PITCH_M]], dtype=np.float32)
-
-    H = cv2.getPerspectiveTransform(src, dst)
-    pitch_quad_px = src.astype(np.int32)
-    CALIB_OK = True
-    print("[calib] 4-point homography loaded.")
-except Exception as e:
-    print(f"[calib] WARNING: could not build homography from {CALIB_JSON}: {e}")
+pitch_quad_px = None
 
 
 
@@ -371,6 +349,30 @@ if __name__ == "__main__":
 
     dt = 1.0 / max(fps, 1.0)
     kf = BallKF(dt=dt)
+
+    # Load calibration for script mode
+    CALIB_JSON = "calibration_stumps.json"
+    try:
+        with open(CALIB_JSON, "r") as f:
+            _cal = json.load(f)
+        pts = _cal["image_points"]
+        bow_bl = pts["bowler_bottom_left"]
+        bow_br = pts["bowler_bottom_right"]
+        bat_bl = pts["batsman_bottom_left"]
+        bat_br = pts["batsman_bottom_right"]
+
+        src = np.array([bow_bl, bow_br, bat_br, bat_bl], dtype=np.float32)
+        dst = np.array([[0.0, 0.0],
+                        [WICKET_WIDTH_M, 0.0],
+                        [WICKET_WIDTH_M, L_PITCH_M],
+                        [0.0, L_PITCH_M]], dtype=np.float32)
+
+        H = cv2.getPerspectiveTransform(src, dst)
+        pitch_quad_px = src.astype(np.int32)
+        CALIB_OK = True
+        print("[calib] 4-point homography loaded for script mode.")
+    except Exception as e:
+        print(f"[calib] WARNING: could not build homography from {CALIB_JSON}: {e}")
 
     frame_idx = 0
     while cap.isOpened():
