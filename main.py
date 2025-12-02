@@ -201,8 +201,13 @@ async def analyze_ball_endpoint(
 
         logger.info(f"Ball analysis complete: {file_id}")
 
-        # Create URL for annotated video (relative path, client will prepend baseUrl)
-        annotated_video_url = f"/download/{file_id}_annotated.mp4"
+        # Log results for debugging
+        logger.info(f"Analysis results - Speed: {results.get('speed')}, Line: {results.get('line')}, Length: {results.get('length')}")
+
+        # Create full URL for annotated video
+        # Get the host from the request or use environment variable
+        base_url = os.getenv("RENDER_EXTERNAL_URL", f"http://{HOST}:{PORT}")
+        annotated_video_url = f"{base_url}/download/{file_id}_annotated.mp4"
 
         return {
             "speed": results.get("speed"),
@@ -210,7 +215,7 @@ async def analyze_ball_endpoint(
             "length": results.get("length"),
             "bounce": results.get("bounce"),
             "trajectory": results.get("trajectory", []),
-            "annotated_video": annotated_video_url,  # Changed key name to match Flutter
+            "annotated_video": annotated_video_url,  # Full URL for Flutter to download
             "video_path": annotated_video_url,  # Alternative key for compatibility
             "file_id": file_id
         }

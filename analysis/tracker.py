@@ -862,23 +862,33 @@ class BallAnalyzer:
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
 
                 # Compute metrics
-                if CALIB_OK and release_idx is not None and bounce_idx is not None:
-                    if length_m_val is None and line_m_val is None:
-                        # Compute length and line at bounce
+                if CALIB_OK:
+                    # Compute speed if we have trajectory data
+                    if release_speed_kmph_val is None and len(trajectory_data) >= 5:
+                        if release_idx is not None:
+                            # Use release to bounce window if both detected
+                            if bounce_idx is not None:
+                                window = trajectory_data[release_idx:bounce_idx]
+                            else:
+                                # Otherwise use first 10-15 frames of trajectory
+                                window = trajectory_data[release_idx:min(release_idx+15, len(trajectory_data))]
+                        else:
+                            # Fallback: use any available trajectory window
+                            window = trajectory_data[:min(15, len(trajectory_data))]
+
+                        if len(window) >= 2:
+                            spd = self._compute_speed(window, fps, H)
+                            if spd:
+                                release_speed_kmph_val = spd
+
+                    # Compute length and line at bounce
+                    if bounce_idx is not None and length_m_val is None and line_m_val is None:
                         bx, by = bounce_pt
                         gm = px_to_ground_via_foot(bx, by) if H is not None else None
                         if gm:
                             Xb, Yb = gm
                             length_m_val = max(0.0, min(L_PITCH_M, L_PITCH_M - Yb))
                             line_m_val = Xb - (WICKET_WIDTH_M / 2.0)
-
-                    # Compute speed (simplified)
-                    if release_speed_kmph_val is None and len(trajectory_data) >= 5:
-                        window = trajectory_data[release_idx:bounce_idx] if bounce_idx else trajectory_data[release_idx:release_idx+10]
-                        if len(window) >= 2:
-                            spd = self._compute_speed(window, fps, H)
-                            if spd:
-                                release_speed_kmph_val = spd
 
                 prev_est = (est_x, est_y)
 
@@ -920,6 +930,15 @@ class BallAnalyzer:
             "trajectory": [{"x": float(x), "y": float(y)} for x, y, _, _ in trajectory_data],
             "annotated_video_path": output_video_path
         }
+
+        # Debug logging
+        print(f"[BallAnalyzer] Analysis complete:")
+        print(f"  - Trajectory points: {len(trajectory_data)}")
+        print(f"  - Release detected: {release_idx is not None} (frame {release_idx})")
+        print(f"  - Bounce detected: {bounce_idx is not None} (frame {bounce_idx})")
+        print(f"  - Speed: {results['speed']} km/h")
+        print(f"  - Line: {results['line']}, Length: {results['length']}")
+        print(f"  - Calibration OK: {CALIB_OK}")
 
         # Save results JSON
         with open(output_json_path, "w") as f:
