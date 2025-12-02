@@ -929,7 +929,7 @@ class BallAnalyzer:
 
     def _compute_speed(self, trajectory_window, fps, H):
         """Simplified speed calculation"""
-        if not trajectory_window or len(trajectory_window) < 2 or not H:
+        if not trajectory_window or len(trajectory_window) < 2 or H is None:
             return None
 
         speeds = []
